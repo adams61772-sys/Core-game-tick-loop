@@ -1,0 +1,764 @@
+// Core game tick loop
+function tick() {
+    if (paused) return;
+
+    // Update FPS counter
+    fpsCounter++;
+    let now = performance.now();
+    if (now - lastFpsTime >= 1000) {
+        fps = fpsCounter;
+        fpsCounter = 0;
+        lastFpsTime = now;
+    }
+
+    // Process each pixel
+    for (let y = height - 1; y >= 0; y--) {
+        for (let x = 0; x < width; x++) {
+            let pixel = pixelMap[y][x];
+            if (!pixel || pixel.updated) continue;
+
+            let element = elements[pixel.element];
+            if (!element) continue;
+
+            // Run element behavior
+            if (element.tick) {
+                element.tick(pixel);
+            }
+
+            pixel.updated = true;
+        }
+    }
+
+    // Reset update flags
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let pixel = pixelMap[y][x];
+            if (pixel) pixel.updated = false;
+        }
+    }
+
+    draw();
+    requestAnimationFrame(tick);
+}
+
+// Draw the world to canvas
+function draw() {
+    let imgData = ctx.createImageData(width, height);
+    let data = imgData.data;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let pixel = pixelMap[y][x];
+            let i = (y * width + x) * 4;
+
+            if (!pixel) {
+                data[i] = 0;
+                data[i+1] = 0;
+                data[i+2] = 0;
+                data[i+3] = 255;
+                continue;
+            }
+
+            let color = pixel.color || elements[pixel.element].color;
+            data[i] = color[0];
+            data[i+1] = color[1];
+            data[i+2] = color[2];
+            data[i+3] = 255;
+        }
+    }
+
+    ctx.putImageData(imgData, 0, 0);
+}
+elements.sand = {
+    color: [194, 178, 128],
+    behavior: [
+        "XX|XX|XX",
+        "XX|CH|XX",
+        "M1|M1|M1"
+    ],
+    category: "powders",
+    state: "solid",
+    density: 1600
+};
+
+elements.water = {
+    color: [64, 164, 223],
+    behavior: [
+        "XX|XX|XX",
+        "M1|CH|M1",
+        "M1|M1|M1"
+    ],
+    category: "liquids",
+    state: "liquid",
+    density: 1000,
+    tempLow: 0,
+    stateLow: "ice",
+    tempHigh: 100,
+    stateHigh: "steam"
+};
+
+elements.steam = {
+    color: [200, 200, 200],
+    behavior: [
+        "M1|M1|M1",
+        "M1|CH|M1",
+        "XX|XX|XX"
+    ],
+    category: "gases",
+    state: "gas",
+    density: 0.3,
+    tempLow: 100,
+    stateLow: "water"
+};
+
+elements.fire = {
+    color: [255, 80, 0],
+    behavior: [
+        "XX|XX|XX",
+        "XX|CH|XX",
+        "XX|M1|XX"
+    ],
+    category: "energy",
+    state: "gas",
+    density: 0.1,
+    tempHigh: 600,
+    stateHigh: "lava",
+    burn: 50
+};
+
+elements.lava = {
+    color: [255, 60, 0],
+    behavior: [
+        "XX|XX|XX",
+        "M1|CH|M1",
+        "M1|M1|M1"
+    ],
+    category: "liquids",
+    state: "liquid",
+    density: 3100,
+    tempLow: 700,
+    stateLow: "basalt"
+};
+
+elements.smoke = {
+    color: [80, 80, 80],
+    behavior: [
+        "M1|M1|M1",
+        "M1|CH|M1",
+        "XX|XX|XX"
+    ],
+    category: "gases",
+    state: "gas",
+    density: 0.2
+};
+// Fire reacts with flammable materials
+reactions.fire = {
+    "wood": { elem1: "fire", elem2: "smoke", chance: 0.2 },
+    "oil": { elem1: "fire", elem2: "fire", chance: 0.4 },
+    "plant": { elem1: "fire", elem2: "ash", chance: 0.3 },
+    "gas": { elem1: "explosion", elem2: null, chance: 0.1 }
+};
+
+// Water reactions
+reactions.water = {
+    "lava": { elem1: "steam", elem2: "basalt", chance: 1.0 },
+    "fire": { elem1: "steam", elem2: null, chance: 0.5 },
+    "acid": { elem1: "acid", elem2: "water", chance: 0.1 }
+};
+
+// Acid reactions
+reactions.acid = {
+    "metal": { elem1: "hydrogen", elem2: "salt", chance: 0.3 },
+    "wood": { elem1: "acid", elem2: "rot", chance: 0.2 },
+    "sand": { elem1: "glass", elem2: null, chance: 0.05 }
+};
+
+// Lava reactions
+reactions.lava = {
+    "water": { elem1: "steam", elem2: "basalt", chance: 1.0 },
+    "ice": { elem1: "water", elem2: "steam", chance: 0.8 },
+    "plant": { elem1: "fire", elem2: "ash", chance: 0.5 }
+};
+
+// Oil reactions
+reactions.oil = {
+    "fire": { elem1: "fire", elem2: "smoke", chance: 0.7 },
+    "water": { elem1: "oil", elem2: "water", chance: 0.05 }
+};
+function tryMove(pixel, dx, dy) {
+    let x = pixel.x;
+    let y = pixel.y;
+    let newX = x + dx;
+    let newY = y + dy;
+
+    if (!isValid(newX, newY)) return false;
+
+    let target = pixelMap[newY][newX];
+
+    // Empty space → move
+    if (!target) {
+        movePixel(pixel, newX, newY);
+        return true;
+    }
+
+    // Swap if density allows
+    let p1 = elements[pixel.element];
+    let p2 = elements[target.element];
+
+    if (p1.density > p2.density) {
+        swapPixels(pixel, target);
+        return true;
+    }
+
+    return false;
+}
+function updateSolid(pixel) {
+    // Fall down
+    if (tryMove(pixel, 0, 1)) return;
+
+    // Slide diagonally
+    if (Math.random() < 0.5) {
+        if (tryMove(pixel, -1, 1)) return;
+        if (tryMove(pixel, 1, 1)) return;
+    } else {
+        if (tryMove(pixel, 1, 1)) return;
+        if (tryMove(pixel, -1, 1)) return;
+    }
+}
+function updateLiquid(pixel) {
+    // Fall down
+    if (tryMove(pixel, 0, 1)) return;
+
+    // Flow sideways
+    let dir = Math.random() < 0.5 ? -1 : 1;
+    if (tryMove(pixel, dir, 0)) return;
+
+    // Try opposite direction
+    if (tryMove(pixel, -dir, 0)) return;
+
+    // Diagonal flow
+    if (tryMove(pixel, dir, 1)) return;
+    if (tryMove(pixel, -dir, 1)) return;
+}
+function updateGas(pixel) {
+    // Rise up
+    if (tryMove(pixel, 0, -1)) return;
+
+    // Spread sideways
+    let dir = Math.random() < 0.5 ? -1 : 1;
+    if (tryMove(pixel, dir, 0)) return;
+
+    // Random drift
+    if (tryMove(pixel, dir, -1)) return;
+    if (tryMove(pixel, -dir, -1)) return;
+}
+function doHeat(pixel) {
+    let e = elements[pixel.element];
+    if (!e.tempHigh && !e.tempLow) return;
+
+    for (let [dx, dy] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        let nx = pixel.x + dx;
+        let ny = pixel.y + dy;
+
+        if (!isValid(nx, ny)) continue;
+
+        let other = pixelMap[ny][nx];
+        if (!other) continue;
+
+        // Heat exchange
+        let diff = pixel.temp - other.temp;
+        if (Math.abs(diff) > 1) {
+            pixel.temp -= diff * 0.1;
+            other.temp += diff * 0.1;
+        }
+    }
+
+    // State changes
+    if (e.tempHigh && pixel.temp >= e.tempHigh) {
+        pixel.element = e.stateHigh;
+    }
+    if (e.tempLow && pixel.temp <= e.tempLow) {
+        pixel.element = e.stateLow;
+    }
+}
+function draw() {
+    // Create a new image buffer
+    let img = ctx.createImageData(width, height);
+    let data = img.data;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let pixel = pixelMap[y][x];
+            let i = (y * width + x) * 4;
+
+            if (!pixel) {
+                // Empty pixel = black background
+                data[i] = 0;
+                data[i+1] = 0;
+                data[i+2] = 0;
+                data[i+3] = 255;
+                continue;
+            }
+
+            // Get element color
+            let elem = elements[pixel.element];
+            let color = pixel.color || elem.color;
+
+            data[i] = color[0];
+            data[i+1] = color[1];
+            data[i+2] = color[2];
+            data[i+3] = 255;
+        }
+    }
+
+    // Push to canvas
+    ctx.putImageData(img, 0, 0);
+}
+function applyColorEffects(pixel, baseColor) {
+    let r = baseColor[0];
+    let g = baseColor[1];
+    let b = baseColor[2];
+
+    // Glow effect
+    if (pixel.glow) {
+        r = Math.min(255, r + pixel.glow);
+        g = Math.min(255, g + pixel.glow);
+        b = Math.min(255, b + pixel.glow);
+    }
+
+    // Temperature tint
+    if (pixel.temp > 100) {
+        r += (pixel.temp - 100) * 0.2;
+    }
+    if (pixel.temp < 0) {
+        b += Math.abs(pixel.temp) * 0.2;
+    }
+
+    return [
+        Math.min(255, r),
+        Math.min(255, g),
+        Math.min(255, b)
+    ];
+}
+function buildElementMenu() {
+    let menu = document.getElementById("elementMenu");
+    menu.innerHTML = "";
+
+    for (let key in elements) {
+        let elem = elements[key];
+
+        let btn = document.createElement("button");
+        btn.className = "elementButton";
+        btn.style.backgroundColor = rgb(elem.color);
+        btn.innerText = key;
+
+        btn.onclick = function() {
+            currentElement = key;
+        };
+
+        menu.appendChild(btn);
+    }
+}
+let brushSize = 5;
+
+document.getElementById("brushSlider").oninput = function(e) {
+    brushSize = parseInt(e.target.value);
+};
+let currentTool = "draw";
+
+function setTool(tool) {
+    currentTool = tool;
+}
+
+document.getElementById("toolErase").onclick = () => setTool("erase");
+document.getElementById("toolFill").onclick = () => setTool("fill");
+document.getElementById("toolDropper").onclick = () => setTool("dropper");
+canvas.addEventListener("mousedown", e => {
+    mouseDown = true;
+    handleMouse(e);
+});
+
+canvas.addEventListener("mouseup", () => {
+    mouseDown = false;
+});
+
+canvas.addEventListener("mousemove", e => {
+    if (mouseDown) handleMouse(e);
+});
+
+function handleMouse(e) {
+    let rect = canvas.getBoundingClientRect();
+    let x = Math.floor((e.clientX - rect.left));
+    let y = Math.floor((e.clientY - rect.top));
+
+    if (currentTool === "draw") {
+        drawCircle(x, y, brushSize, currentElement);
+    }
+    else if (currentTool === "erase") {
+        drawCircle(x, y, brushSize, null);
+    }
+    else if (currentTool === "dropper") {
+        let p = pixelMap[y][x];
+        if (p) currentElement = p.element;
+    }
+}
+function drawCircle(cx, cy, r, elem) {
+    for (let y = -r; y <= r; y++) {
+        for (let x = -r; x <= r; x++) {
+            if (x*x + y*y <= r*r) {
+                let px = cx + x;
+                let py = cy + y;
+
+                if (isValid(px, py)) {
+                    if (elem) {
+                        createPixel(px, py, elem);
+                    } else {
+                        pixelMap[py][px] = null;
+                    }
+                }
+            }
+        }
+    }
+}
+function drawLine(x1, y1, x2, y2, r, elem) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let steps = Math.max(Math.abs(dx), Math.abs(dy));
+
+    for (let i = 0; i <= steps; i++) {
+        let x = Math.floor(x1 + dx * (i / steps));
+        let y = Math.floor(y1 + dy * (i / steps));
+        drawCircle(x, y, r, elem);
+    }
+}
+function floodFill(x, y, targetElem, newElem) {
+    if (!isValid(x, y)) return;
+    let start = pixelMap[y][x];
+    if (!start || start.element !== targetElem) return;
+
+    let stack = [[x, y]];
+
+    while (stack.length > 0) {
+        let [cx, cy] = stack.pop();
+        let p = pixelMap[cy][cx];
+
+        if (!p || p.element !== targetElem) continue;
+
+        createPixel(cx, cy, newElem);
+
+        for (let [dx, dy] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+            let nx = cx + dx;
+            let ny = cy + dy;
+            if (isValid(nx, ny)) {
+                stack.push([nx, ny]);
+            }
+        }
+    }
+}
+function sprayBrush(cx, cy, r, elem) {
+    let count = r * 3;
+
+    for (let i = 0; i < count; i++) {
+        let angle = Math.random() * Math.PI * 2;
+        let dist = Math.random() * r;
+
+        let x = Math.floor(cx + Math.cos(angle) * dist);
+        let y = Math.floor(cy + Math.sin(angle) * dist);
+
+        if (isValid(x, y)) {
+            createPixel(x, y, elem);
+        }
+    }
+}
+function eraseCircle(cx, cy, r) {
+    drawCircle(cx, cy, r, null);
+}
+function addElement(name, data) {
+    if (elements[name]) {
+        console.warn("Element already exists:", name);
+        return;
+    }
+    elements[name] = data;
+}
+function addReaction(elem1, elem2, data) {
+    if (!reactions[elem1]) reactions[elem1] = {};
+    reactions[elem1][elem2] = data;
+}
+function addBehavior(name, func) {
+    if (!elements[name]) return;
+    elements[name].tick = func;
+}
+function loadMod(url) {
+    let script = document.createElement("script");
+    script.src = url;
+    script.onload = () => console.log("Loaded mod:", url);
+    script.onerror = () => console.error("Failed to load mod:", url);
+    document.body.appendChild(script);
+}
+function saveWorld() {
+    let save = {
+        width: width,
+        height: height,
+        pixels: []
+    };
+
+    for (let y = 0; y < height; y++) {
+        let row = [];
+        for (let x = 0; x < width; x++) {
+            let p = pixelMap[y][x];
+            if (!p) {
+                row.push(null);
+            } else {
+                row.push({
+                    element: p.element,
+                    temp: p.temp || 20,
+                    color: p.color || null
+                });
+            }
+        }
+        save.pixels.push(row);
+    }
+
+    return JSON.stringify(save);
+}
+function loadWorld(json) {
+    let save = JSON.parse(json);
+
+    width = save.width;
+    height = save.height;
+
+    pixelMap = [];
+
+    for (let y = 0; y < height; y++) {
+        let row = [];
+        for (let x = 0; x < width; x++) {
+            let data = save.pixels[y][x];
+            if (!data) {
+                row.push(null);
+            } else {
+                let p = createPixel(x, y, data.element);
+                p.temp = data.temp;
+                if (data.color) p.color = data.color;
+                row.push(p);
+            }
+        }
+        pixelMap.push(row);
+    }
+}
+function exportWorld() {
+    let data = saveWorld();
+    let blob = new Blob([data], { type: "application/json" });
+    let url = URL.createObjectURL(blob);
+
+    let a = document.createElement("a");
+    a.href = url;
+    a.download = "sandboxels_save.json";
+    a.click();
+
+    URL.revokeObjectURL(url);
+}
+function importWorld(file) {
+    let reader = new FileReader();
+
+    reader.onload = function(e) {
+        loadWorld(e.target.result);
+    };
+
+    reader.readAsText(file);
+}
+function processPixelColor(pixel) {
+    let elem = elements[pixel.element];
+    let base = elem.color.slice();
+
+    // Glow effect
+    if (pixel.glow) {
+        base[0] = Math.min(255, base[0] + pixel.glow);
+        base[1] = Math.min(255, base[1] + pixel.glow);
+        base[2] = Math.min(255, base[2] + pixel.glow);
+    }
+
+    // Temperature tint
+    if (pixel.temp > 100) {
+        base[0] += (pixel.temp - 100) * 0.2;
+    }
+    if (pixel.temp < 0) {
+        base[2] += Math.abs(pixel.temp) * 0.2;
+    }
+
+    // Random flicker (for fire, plasma, etc.)
+    if (elem.flicker) {
+        let f = Math.floor(Math.random() * elem.flicker);
+        base[0] = Math.min(255, base[0] + f);
+        base[1] = Math.min(255, base[1] + f);
+        base[2] = Math.min(255, base[2] + f);
+    }
+
+    return [
+        Math.min(255, base[0]),
+        Math.min(255, base[1]),
+        Math.min(255, base[2])
+    ];
+}
+function applyHeatGlow(pixel, dataIndex, data) {
+    if (pixel.temp > 200) {
+        let glow = Math.min(255, (pixel.temp - 200) * 0.5);
+        data[dataIndex]     = Math.min(255, data[dataIndex]     + glow);
+        data[dataIndex + 1] = Math.min(255, data[dataIndex + 1] + glow * 0.3);
+        data[dataIndex + 2] = Math.min(255, data[dataIndex + 2] + glow * 0.1);
+    }
+}
+function applyGasAlpha(pixel, dataIndex, data) {
+    let elem = elements[pixel.element];
+    if (elem.state === "gas") {
+        data[dataIndex + 3] = 120 + Math.floor(Math.random() * 40);
+    }
+}
+function drawAdvanced() {
+    let img = ctx.createImageData(width, height);
+    let data = img.data;
+
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let pixel = pixelMap[y][x];
+            let i = (y * width + x) * 4;
+
+            if (!pixel) {
+                data[i] = 0;
+                data[i+1] = 0;
+                data[i+2] = 0;
+                data[i+3] = 255;
+                continue;
+            }
+
+            // Base processed color
+            let color = processPixelColor(pixel);
+            data[i] = color[0];
+            data[i+1] = color[1];
+            data[i+2] = color[2];
+            data[i+3] = 255;
+
+            // Heat glow
+            applyHeatGlow(pixel, i, data);
+
+            // Gas transparency
+            applyGasAlpha(pixel, i, data);
+        }
+    }
+
+    ctx.putImageData(img, 0, 0);
+}
+function liquidPressure(pixel) {
+    let x = pixel.x;
+    let y = pixel.y;
+
+    // Check left and right for pressure differences
+    for (let dir of [-1, 1]) {
+        let nx = x + dir;
+        let ny = y;
+
+        if (!isValid(nx, ny)) continue;
+
+        let neighbor = pixelMap[ny][nx];
+        if (!neighbor) continue;
+
+        let p1 = elements[pixel.element];
+        let p2 = elements[neighbor.element];
+
+        // Higher density pushes lower density sideways
+        if (p1.density > p2.density + 50) {
+            tryMove(pixel, dir, 0);
+            return true;
+        }
+    }
+
+    return false;
+}
+function gasDiffuse(pixel) {
+    let dirs = [
+        [0, -1],   // up
+        [1, 0],    // right
+        [-1, 0],   // left
+        [0, 1]     // down (rare)
+    ];
+
+    // Randomize order
+    dirs.sort(() => Math.random() - 0.5);
+
+    for (let [dx, dy] of dirs) {
+        if (tryMove(pixel, dx, dy)) return true;
+    }
+
+    return false;
+}
+function granularFlow(pixel) {
+    // Fall straight down
+    if (tryMove(pixel, 0, 1)) return true;
+
+    // Flow diagonally
+    let dir = Math.random() < 0.5 ? -1 : 1;
+
+    if (tryMove(pixel, dir, 1)) return true;
+    if (tryMove(pixel, -dir, 1)) return true;
+
+    // Spread sideways if supported
+    if (Math.random() < 0.2) {
+        if (tryMove(pixel, dir, 0)) return true;
+        if (tryMove(pixel, -dir, 0)) return true;
+    }
+
+    return false;
+}
+function viscousLiquid(pixel) {
+    let elem = elements[pixel.element];
+
+    // Viscosity slows movement
+    if (Math.random() > elem.viscosity) return false;
+
+    // Try normal liquid movement
+    return updateLiquid(pixel);
+}
+function buoyancy(pixel, other) {
+    let p1 = elements[pixel.element];
+    let p2 = elements[other.element];
+
+    // If pixel is lighter, it rises
+    if (p1.density < p2.density) {
+        swapPixels(pixel, other);
+        return true;
+    }
+
+    return false;
+}
+function thermalExpansion(pixel) {
+    if (pixel.temp > 200) {
+        // Hot gas rises aggressively
+        if (tryMove(pixel, 0, -1)) return true;
+        if (tryMove(pixel, 0, -2)) return true;
+    }
+}
+function physicsTick() {
+    for (let y = height - 1; y >= 0; y--) {
+        for (let x = 0; x < width; x++) {
+            let pixel = pixelMap[y][x];
+            if (!pixel || pixel.updated) continue;
+
+            let elem = elements[pixel.element];
+
+            // Priority: gas → liquid → granular → solid
+            if (elem.state === "gas") updateGas(pixel);
+            else if (elem.state === "liquid") updateLiquid(pixel);
+            else if (elem.category === "powders") granularFlow(pixel);
+            else updateSolid(pixel);
+
+            pixel.updated = true;
+        }
+    }
+
+    // Reset flags
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            let p = pixelMap[y][x];
+            if (p) p.updated = false;
+        }
+    }
+}
